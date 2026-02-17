@@ -1,0 +1,156 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;800;900&display=swap');
+@import "tailwindcss";
+
+:root {
+  --primary-gold: #b8860b;
+  --light-gold: #cfb53b;
+  --ivory-white: #ffffff;
+  --soft-slate: #64748b;
+  --rich-black: #0f172a;
+}
+
+* {
+  box-sizing: border-box;
+  /* Disable transitions for instant feel - Commented out to fix Toastify animations 
+  transition: none !important;
+  animation: none !important;
+  */
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  margin: 0;
+  min-height: 100vh;
+  background-color: #ffffff;
+  color: #0f172a;
+}
+
+h1,
+h2,
+h3,
+h4,
+.font-display {
+  font-family: 'Outfit', sans-serif;
+}
+
+/* --- Golden Utilities --- */
+
+@utility text-gold-premium {
+  color: var(--primary-gold);
+}
+
+@utility bg-gold-premium {
+  background-color: var(--primary-gold);
+}
+
+@utility border-gold-premium {
+  border: 2px solid var(--primary-gold);
+}
+
+.glass-premium {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* --- Clean Layouts --- */
+
+.card-white {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 1rem;
+  padding: 2rem;
+}
+
+/* --- Buttons --- */
+
+.btn-gold {
+  background-color: var(--primary-gold);
+  color: white;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.btn-gold:hover {
+  background-color: var(--light-gold);
+}
+
+.btn-outline-gold {
+  border: 2px solid var(--primary-gold);
+  color: var(--primary-gold);
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.5rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: transparent;
+}
+
+/* --- Inputs --- */
+
+.input-premium {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  background: white;
+  border: 1px solid #cbd5e1;
+  color: #0f172a;
+  font-weight: 500;
+  outline: none;
+}
+
+.input-premium:focus {
+  border-color: var(--primary-gold);
+  box-shadow: 0 0 0 2px rgba(184, 134, 11, 0.1);
+}
+
+/* --- Table --- */
+
+.table-container {
+  width: 100%;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid #e2e8f0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th {
+  background: #f8fafc;
+  padding: 1rem;
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  color: #64748b;
+  border-bottom: 2px solid #e2e8f0;
+  text-align: left;
+}
+
+td {
+  padding: 1rem;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 0.875rem;
+}
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 4px;
+}
