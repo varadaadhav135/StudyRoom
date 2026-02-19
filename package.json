@@ -45,5 +45,6 @@
     "jwt-authentication"
   ],
   "author": "Varad",
-  "license": "MIT"
+  "license": "MIT",
+  "packageManager": "npm@10.9.2"
 }
