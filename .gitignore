@@ -40,5 +40,3 @@ coverage/
 .temp
 *.tgz
 
-# npm lockfile (project uses pnpm)
-package-lock.json
