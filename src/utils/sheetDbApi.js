@@ -1,60 +1,60 @@
 import axios from 'axios';
 
 // ─────────────────────────────────────────────────────────────
-// Apps Script Web App API
+// Apps Script Web App API — Single Sheet Edition
 //
-// Set VITE_APPS_SCRIPT_URL in your .env to the deployed Web App URL:
-//   VITE_APPS_SCRIPT_URL=https://script.google.com/macros/s/YOUR_ID/exec
+// Set VITE_APPS_SCRIPT_URL in your .env:
+//   VITE_APPS_SCRIPT_URL=https://script.google.com/macros/s/YOUR_SCRIPT_ID/exec
 //
-// Sheet: "Student"
-// Columns: row_key | id | username | email | mobile | aadhar_number |
-//          monthly_fee | subscription_start | subscription_end |
-//          current_month_paid | month | year | amount | status | created_at
+// Sheet: "Student"  (exact header row — no extra columns)
+// Columns:
+//   id | username | email | mobile | aadhar_number | monthly_fee |
+//   subscription_start | subscription_end | current_month_paid |
+//   month | year | amount | status
 //
-// row_key = "{id}-{month}-{year}"  (unique per student per month)
+// One row = one student for one month.
+// Unique row identity = id + month + year  (handled by searchMulti/updateMulti)
 // ─────────────────────────────────────────────────────────────
 
 const API_URL = import.meta.env.VITE_APPS_SCRIPT_URL || '';
 
 if (!API_URL) {
-    console.warn('[API] VITE_APPS_SCRIPT_URL is not set. Set it in .env after deploying your Apps Script.');
+    console.warn('[API] VITE_APPS_SCRIPT_URL is not set in .env');
 }
 
-// ─── low-level helpers ───────────────────────────────────────────────────────
+// ─── HTTP helpers ────────────────────────────────────────────────────────────
 
-// Apps Script Web Apps require GET for reads, POST for writes.
-// To avoid CORS preflight issues with POST, all writes are sent as POST
-// with JSON body. The script reads e.postData.contents.
-
-const get = async (params) => {
-    const qs = new URLSearchParams({ ...params }).toString();
+const appsGet = async (params) => {
+    const qs = new URLSearchParams(params).toString();
     const res = await axios.get(`${API_URL}?${qs}`);
+    if (!res.data?.success) throw new Error(res.data?.error || 'Apps Script returned failure');
     return res.data;
 };
 
-const post = async (params, body) => {
-    const qs = new URLSearchParams({ ...params }).toString();
+const appsPost = async (queryParams, body) => {
+    const qs = new URLSearchParams(queryParams).toString();
     const res = await axios.post(`${API_URL}?${qs}`, body);
+    if (!res.data?.success) throw new Error(res.data?.error || 'Apps Script returned failure');
     return res.data;
 };
 
-// ─── composite row key ───────────────────────────────────────────────────────
-const rowKey = (studentId, month, year) => `${studentId}-${month}-${year}`;
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const sheetDbApi = {
 
     // ═══════════════════════════════════════════════════════════
     // GET STUDENTS
-    // Fetches all rows, deduplicates by `id` to get student list.
+    // Reads all rows, deduplicates by `id`.
+    // Each student = the first row found for their id
+    // (subsequent rows are their payment history for other months).
     // ═══════════════════════════════════════════════════════════
     getStudents: async () => {
         try {
-            const result = await get({ action: 'getAll' });
-            if (!result.success) throw new Error(result.error);
-
+            const result = await appsGet({ action: 'getAll' });
             const seen = new Set();
             const students = [];
-            for (const row of result.data || []) {
+
+            for (const row of (result.data || [])) {
                 if (!seen.has(row.id)) {
                     seen.add(row.id);
                     students.push({
@@ -68,7 +68,6 @@ export const sheetDbApi = {
                         current_month_paid: row.current_month_paid === 'TRUE',
                         subscription_start: row.subscription_start,
                         subscription_end: row.subscription_end,
-                        created_at: row.created_at,
                         subscriptions: [{
                             start_date: row.subscription_start,
                             end_date: row.subscription_end,
@@ -87,23 +86,20 @@ export const sheetDbApi = {
 
     // ═══════════════════════════════════════════════════════════
     // GET PAYMENTS
-    // Returns every row as a payment record.
+    // Every row = one payment record.
     // ═══════════════════════════════════════════════════════════
     getPayments: async () => {
         try {
-            const result = await get({ action: 'getAll' });
-            if (!result.success) throw new Error(result.error);
-
+            const result = await appsGet({ action: 'getAll' });
             const payments = (result.data || [])
                 .filter(row => row.month !== '' && row.year !== '')
                 .map(row => ({
-                    id: row.row_key || rowKey(row.id, row.month, row.year),
+                    id: `${row.id}-${row.month}-${row.year}`,
                     student_id: String(row.id),
                     month: String(row.month),
                     year: String(row.year),
                     amount: row.amount || row.monthly_fee || '0',
-                    status: row.status || 'Unpaid',
-                    payment_date: row.payment_date || ''
+                    status: row.status || 'Unpaid'
                 }));
             return { success: true, payments };
         } catch (err) {
@@ -114,40 +110,36 @@ export const sheetDbApi = {
 
     // ═══════════════════════════════════════════════════════════
     // CREATE STUDENT
-    // Inserts one row for the current month.
+    // Inserts one row: student profile + current month's payment.
     // ═══════════════════════════════════════════════════════════
     createStudent: async (_token, data) => {
         try {
             const id = data.id || `STU-${Date.now()}`;
             const now = new Date();
-            const month = String(now.getMonth());
+            const month = String(now.getMonth());   // 0-indexed
             const year = String(now.getFullYear());
-            const rk = rowKey(id, month, year);
             const isFree = data.is_free || parseFloat(data.monthly_fee) === 0;
-            const isPaid = !isFree && data.paid_this_month;
+            const isPaid = !isFree && !!data.paid_this_month;
 
             const row = {
-                row_key: rk,
                 id,
-                username: data.username,
-                email: data.email,
-                mobile: data.mobile,
-                aadhar_number: data.aadhar_number,
+                username: data.username || '',
+                email: data.email || '',
+                mobile: data.mobile || '',
+                aadhar_number: data.aadhar_number || '',
                 monthly_fee: isFree ? '0' : String(data.monthly_fee),
-                subscription_start: data.subscription_start,
-                subscription_end: data.subscription_end,
+                subscription_start: data.subscription_start || '',
+                subscription_end: data.subscription_end || '',
                 current_month_paid: isPaid ? 'TRUE' : 'FALSE',
                 month,
                 year,
                 amount: isFree ? '0' : String(data.monthly_fee),
-                status: isFree ? 'Free' : (isPaid ? 'Paid' : 'Unpaid'),
-                created_at: now.toISOString()
+                status: isFree ? 'Free' : (isPaid ? 'Paid' : 'Unpaid')
             };
 
-            console.log('[createStudent] Inserting row:', row);
-            const result = await post({ action: 'insert' }, { row });
-            if (!result.success) throw new Error(result.error);
-            return { success: true, student: { ...row, id } };
+            console.log('[createStudent] Inserting:', row);
+            await appsPost({ action: 'insert' }, { row });
+            return { success: true, student: { ...row } };
         } catch (err) {
             console.error('createStudent Error:', err.message);
             return { success: false, message: err.message };
@@ -156,19 +148,19 @@ export const sheetDbApi = {
 
     // ═══════════════════════════════════════════════════════════
     // UPDATE STUDENT PROFILE
-    // Updates profile columns across all rows for this student.
+    // Updates all rows that share the same id (all months).
+    // Only updates profile fields — not payment-specific columns.
     // ═══════════════════════════════════════════════════════════
     updateProfile: async (id, updates) => {
         try {
             const fmt = { ...updates };
+            // Convert booleans to strings
             if (typeof fmt.is_free === 'boolean') fmt.is_free = fmt.is_free ? 'TRUE' : 'FALSE';
             if (typeof fmt.current_month_paid === 'boolean') fmt.current_month_paid = fmt.current_month_paid ? 'TRUE' : 'FALSE';
-            // Remove payment-row-specific fields from profile updates
-            delete fmt.month; delete fmt.year; delete fmt.status;
-            delete fmt.amount; delete fmt.row_key;
+            // Do NOT overwrite payment-specific columns via profile update
+            delete fmt.month; delete fmt.year; delete fmt.status; delete fmt.amount;
 
-            const result = await post({ action: 'update', col: 'id', val: String(id) }, { updates: fmt });
-            if (!result.success) throw new Error(result.error);
+            await appsPost({ action: 'update' }, { col: 'id', val: String(id), updates: fmt });
             return { success: true };
         } catch (err) {
             console.error('updateProfile Error:', err.message);
@@ -178,12 +170,11 @@ export const sheetDbApi = {
 
     // ═══════════════════════════════════════════════════════════
     // DELETE STUDENT
-    // Removes all rows for this student id.
+    // Deletes all rows for this student (all months).
     // ═══════════════════════════════════════════════════════════
     deleteStudent: async (_token, id) => {
         try {
-            const result = await post({ action: 'delete', col: 'id', val: String(id) }, {});
-            if (!result.success) throw new Error(result.error);
+            await appsPost({ action: 'deleteMulti' }, { id: String(id) });
             return { success: true };
         } catch (err) {
             console.error('deleteStudent Error:', err.message);
@@ -193,38 +184,48 @@ export const sheetDbApi = {
 
     // ═══════════════════════════════════════════════════════════
     // RECORD PAYMENT
-    // Upserts the payment status for a student + month + year.
-    //   - Row exists (by row_key) → update status/amount
-    //   - Row missing              → insert new row for that month
+    // Upserts payment status for a specific student + month + year.
+    //   - Row exists  → updateMulti (patches status/amount only)
+    //   - Row missing → insert a new row for that month
     // ═══════════════════════════════════════════════════════════
     recordPayment: async (studentId, month, year, amount, isPaid) => {
-        const rk = rowKey(studentId, month, year);
         const isFree = parseFloat(amount) === 0;
         const status = isFree ? 'Free' : (isPaid ? 'Paid' : 'Unpaid');
-        const paymentDate = isPaid ? new Date().toISOString() : '';
+        const monthStr = String(month);
+        const yearStr = String(year);
 
-        console.log(`[recordPayment] rk:${rk} status:${status}`);
+        console.log(`[recordPayment] id:${studentId} ${monthStr}/${yearStr} → ${status}`);
 
         try {
-            // Check if row already exists for this student-month-year
-            const searchResult = await get({ action: 'search', col: 'row_key', val: rk });
-            const existing = searchResult.success ? (searchResult.data || []) : [];
+            // 1. Check if a row already exists for this student+month+year
+            const searchResult = await appsGet({
+                action: 'searchMulti',
+                id: String(studentId),
+                month: monthStr,
+                year: yearStr
+            });
+            const existing = searchResult.data || [];
 
             if (existing.length > 0) {
-                // ── UPDATE existing row ──────────────────────────────
-                const result = await post(
-                    { action: 'update', col: 'row_key', val: rk },
-                    { updates: { amount: String(amount), status, current_month_paid: isPaid ? 'TRUE' : 'FALSE', payment_date: paymentDate } }
-                );
-                if (!result.success) throw new Error(result.error);
-                console.log(`[recordPayment] UPDATED row_key:${rk}`);
+                // ── UPDATE existing row ─────────────────────────────
+                await appsPost({ action: 'updateMulti' }, {
+                    id: String(studentId),
+                    month: monthStr,
+                    year: yearStr,
+                    updates: {
+                        amount: String(amount),
+                        status,
+                        current_month_paid: isPaid ? 'TRUE' : 'FALSE'
+                    }
+                });
+                console.log('[recordPayment] Updated existing row');
             } else {
-                // ── INSERT new row for this month ────────────────────
-                const profileResult = await get({ action: 'search', col: 'id', val: String(studentId) });
+                // ── INSERT new row for this month ───────────────────
+                // Fetch the student's base profile to fill all columns
+                const profileResult = await appsGet({ action: 'search', col: 'id', val: String(studentId) });
                 const profile = (profileResult.data || [])[0] || {};
 
                 const newRow = {
-                    row_key: rk,
                     id: String(studentId),
                     username: profile.username || '',
                     email: profile.email || '',
@@ -234,16 +235,13 @@ export const sheetDbApi = {
                     subscription_start: profile.subscription_start || '',
                     subscription_end: profile.subscription_end || '',
                     current_month_paid: isPaid ? 'TRUE' : 'FALSE',
-                    month: String(month),
-                    year: String(year),
+                    month: monthStr,
+                    year: yearStr,
                     amount: String(amount),
-                    status,
-                    payment_date: paymentDate,
-                    created_at: profile.created_at || ''
+                    status
                 };
-                const result = await post({ action: 'insert' }, { row: newRow });
-                if (!result.success) throw new Error(result.error);
-                console.log(`[recordPayment] INSERTED row_key:${rk}`);
+                await appsPost({ action: 'insert' }, { row: newRow });
+                console.log('[recordPayment] Inserted new row for month', monthStr, yearStr);
             }
             return { success: true };
         } catch (err) {
@@ -262,7 +260,7 @@ export const sheetDbApi = {
     deleteResource: async () => ({ success: false, message: 'Not implemented' }),
     getProgress: async () => ({ success: true, progress: [] }),
     updateProgress: async () => ({ success: false, message: 'Not implemented' }),
-    syncPaymentRecords: async () => ({ success: true }), // no longer needed
+    syncPaymentRecords: async () => ({ success: true }), // no-op
 };
 
 export default sheetDbApi;
