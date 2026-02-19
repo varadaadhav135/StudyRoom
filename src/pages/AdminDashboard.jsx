@@ -43,34 +43,14 @@ const AdminDashboard = () => {
     const fetchData = async () => {
         setLoading(true);
         try {
-            // Fetch students AND payments in parallel
+            // Single sheet — getStudents() and getPayments() both read the same sheet
             const [resStudents, resPayments] = await Promise.all([
                 api.getStudents(),
                 api.getPayments ? api.getPayments() : Promise.resolve({ success: true, payments: [] })
             ]);
 
-            const loadedStudents = resStudents.success ? (resStudents.students || []) : [];
-            const loadedPayments = resPayments.success ? (resPayments.payments || []) : [];
-
-            if (resStudents.success) setStudents(loadedStudents);
-            if (resPayments.success) setPayments(loadedPayments);
-
-            // Sync Payment sheet — creates "Unpaid" rows for students not yet in Payment sheet
-            // for the current month, so their IDs appear in Google Sheets automatically
-            if (resStudents.success && api.syncPaymentRecords) {
-                api.syncPaymentRecords(
-                    loadedStudents,
-                    new Date().getMonth(),
-                    new Date().getFullYear()
-                ).then(() => {
-                    // Refresh payments after sync so UI picks up newly created rows
-                    if (api.getPayments) {
-                        api.getPayments().then(r => {
-                            if (r.success) setPayments(r.payments || []);
-                        });
-                    }
-                });
-            }
+            if (resStudents.success) setStudents(resStudents.students || []);
+            if (resPayments.success) setPayments(resPayments.payments || []);
         } catch (error) {
             console.error('Failed to load data:', error);
             toast.error('Failed to load data');
@@ -188,17 +168,19 @@ const AdminDashboard = () => {
                 setStudents(prev => prev.map(s =>
                     s.id === student.id ? { ...s, monthly_fee: 0, is_free: true } : s
                 ));
-                // Remove from payment tracking for this month
                 setPayments(prev => prev.filter(p =>
                     !(String(p.student_id) === String(student.id) &&
                         String(p.month) === String(selectedMonth) &&
                         String(p.year) === String(selectedYear))
                 ));
 
-                // Update Student sheet: mark free, zero fee
                 await api.updateProfile(student.id, { is_free: 'TRUE', monthly_fee: 0 });
-                // Update Payment sheet: mark as Free/zero for this month
-                await api.recordPayment(student.id, selectedMonth, selectedYear, 0, false);
+                const payRes = await api.recordPayment(student.id, selectedMonth, selectedYear, 0, false);
+                if (!payRes.success) throw new Error(payRes.message);
+
+                // Re-fetch to confirm sheet state
+                const fresh = await api.getPayments();
+                if (fresh.success) setPayments(fresh.payments || []);
                 return;
             }
 
@@ -209,7 +191,6 @@ const AdminDashboard = () => {
                 setStudents(prev => prev.map(s =>
                     s.id === student.id ? { ...s, monthly_fee: currentFee, is_free: false } : s
                 ));
-                // Update Student sheet: clear free flag, set default fee
                 await api.updateProfile(student.id, { is_free: 'FALSE', monthly_fee: currentFee });
             }
 
@@ -235,8 +216,13 @@ const AdminDashboard = () => {
                 }];
             });
 
-            // Update Payment sheet row (create if missing, update if exists)
-            await api.recordPayment(student.id, selectedMonth, selectedYear, feeToRecord, isPaid);
+            // Write to single sheet (upsert by row_key)
+            const payRes = await api.recordPayment(student.id, selectedMonth, selectedYear, feeToRecord, isPaid);
+            if (!payRes.success) throw new Error(payRes.message);
+
+            // Re-fetch payments to confirm what's actually saved in the sheet
+            const fresh = await api.getPayments();
+            if (fresh.success) setPayments(fresh.payments || []);
 
         } catch (error) {
             console.error(error);
