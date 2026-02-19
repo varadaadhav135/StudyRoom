@@ -1,68 +1,60 @@
 import axios from 'axios';
 
-const SHEETDB_API_URL = import.meta.env.VITE_SHEETDB_API_URL || 'https://sheetdb.io/api/v1/tjpqhngurtnvq';
-
-const STUDENT_SHEET = 'Student';
-
 // ─────────────────────────────────────────────────────────────
-// Single-Sheet Schema (one sheet only: "Student")
+// Apps Script Web App API
 //
-// row_key          → unique per student-month: "{id}-{month}-{year}"  e.g. "369-1-2026"
-// id               → student desk number (e.g. "369")
-// username         → full name
-// email            →
-// mobile           →
-// aadhar_number    →
-// monthly_fee      → fee amount (0 = free student)
-// subscription_start →
-// subscription_end →
-// current_month_paid → TRUE / FALSE (legacy-compat, mirrors status)
-// month            → 0-indexed (January = 0)
-// year             → 4-digit year
-// amount           → fee charged for this row's month
-// status           → "Paid" | "Unpaid" | "Free"
+// Set VITE_APPS_SCRIPT_URL in your .env to the deployed Web App URL:
+//   VITE_APPS_SCRIPT_URL=https://script.google.com/macros/s/YOUR_ID/exec
 //
-// IMPORTANT: SheetDB PATCH uses /id/{row_key} to update a unique row.
+// Sheet: "Student"
+// Columns: row_key | id | username | email | mobile | aadhar_number |
+//          monthly_fee | subscription_start | subscription_end |
+//          current_month_paid | month | year | amount | status | created_at
+//
+// row_key = "{id}-{month}-{year}"  (unique per student per month)
 // ─────────────────────────────────────────────────────────────
 
-const rowKey = (studentId, month, year) => `${studentId}-${month}-${year}`;
+const API_URL = import.meta.env.VITE_APPS_SCRIPT_URL || '';
 
-// SheetDB returns 404 when search has 0 results — convert to []
-const safeSearch = async (params) => {
-    try {
-        const qs = Object.entries(params)
-            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-            .join('&');
-        const res = await axios.get(`${SHEETDB_API_URL}/search?${qs}&sheet=${STUDENT_SHEET}`);
-        return Array.isArray(res.data) ? res.data : [];
-    } catch (err) {
-        if (err.response?.status === 404) return [];
-        throw err;
-    }
+if (!API_URL) {
+    console.warn('[API] VITE_APPS_SCRIPT_URL is not set. Set it in .env after deploying your Apps Script.');
+}
+
+// ─── low-level helpers ───────────────────────────────────────────────────────
+
+// Apps Script Web Apps require GET for reads, POST for writes.
+// To avoid CORS preflight issues with POST, all writes are sent as POST
+// with JSON body. The script reads e.postData.contents.
+
+const get = async (params) => {
+    const qs = new URLSearchParams({ ...params }).toString();
+    const res = await axios.get(`${API_URL}?${qs}`);
+    return res.data;
 };
 
-// SheetDB body formats:
-//   POST  → send row directly (plain object)
-//   PATCH → must wrap in { data: {...} }
-const sheetPost = (url, row) => axios.post(url, row);
-const sheetPatch = (url, updates) => axios.patch(url, { data: updates });
+const post = async (params, body) => {
+    const qs = new URLSearchParams({ ...params }).toString();
+    const res = await axios.post(`${API_URL}?${qs}`, body);
+    return res.data;
+};
+
+// ─── composite row key ───────────────────────────────────────────────────────
+const rowKey = (studentId, month, year) => `${studentId}-${month}-${year}`;
 
 export const sheetDbApi = {
 
     // ═══════════════════════════════════════════════════════════
-    // STUDENTS — fetch all rows, deduplicate by id to get
-    //            the canonical student profile (latest row wins)
+    // GET STUDENTS
+    // Fetches all rows, deduplicates by `id` to get student list.
     // ═══════════════════════════════════════════════════════════
     getStudents: async () => {
         try {
-            const res = await axios.get(`${SHEETDB_API_URL}?sheet=${STUDENT_SHEET}`);
-            const rows = res.data || [];
+            const result = await get({ action: 'getAll' });
+            if (!result.success) throw new Error(result.error);
 
-            // De-duplicate: one student object per unique `id`
-            // Use the first occurrence (rows are in insert order, so the base profile)
             const seen = new Set();
             const students = [];
-            for (const row of rows) {
+            for (const row of result.data || []) {
                 if (!seen.has(row.id)) {
                     seen.add(row.id);
                     students.push({
@@ -74,6 +66,8 @@ export const sheetDbApi = {
                         monthly_fee: row.monthly_fee,
                         is_free: parseFloat(row.monthly_fee) === 0,
                         current_month_paid: row.current_month_paid === 'TRUE',
+                        subscription_start: row.subscription_start,
+                        subscription_end: row.subscription_end,
                         created_at: row.created_at,
                         subscriptions: [{
                             start_date: row.subscription_start,
@@ -86,21 +80,22 @@ export const sheetDbApi = {
             }
             return { success: true, students };
         } catch (err) {
-            console.error('getStudents Error:', err);
+            console.error('getStudents Error:', err.message);
             return { success: false, message: err.message, students: [] };
         }
     },
 
     // ═══════════════════════════════════════════════════════════
-    // PAYMENTS — return every row as a payment record.
-    //            student_id is just the `id` column.
+    // GET PAYMENTS
+    // Returns every row as a payment record.
     // ═══════════════════════════════════════════════════════════
     getPayments: async () => {
         try {
-            const res = await axios.get(`${SHEETDB_API_URL}?sheet=${STUDENT_SHEET}`);
-            const rows = res.data || [];
-            const payments = rows
-                .filter(row => row.month !== '' && row.year !== '')   // skip rows without month info
+            const result = await get({ action: 'getAll' });
+            if (!result.success) throw new Error(result.error);
+
+            const payments = (result.data || [])
+                .filter(row => row.month !== '' && row.year !== '')
                 .map(row => ({
                     id: row.row_key || rowKey(row.id, row.month, row.year),
                     student_id: String(row.id),
@@ -118,7 +113,8 @@ export const sheetDbApi = {
     },
 
     // ═══════════════════════════════════════════════════════════
-    // CREATE STUDENT — inserts one row for the current month
+    // CREATE STUDENT
+    // Inserts one row for the current month.
     // ═══════════════════════════════════════════════════════════
     createStudent: async (_token, data) => {
         try {
@@ -148,50 +144,46 @@ export const sheetDbApi = {
                 created_at: now.toISOString()
             };
 
-            console.log('[createStudent] Posting row:', row);
-            await sheetPost(`${SHEETDB_API_URL}?sheet=${STUDENT_SHEET}`, row);
+            console.log('[createStudent] Inserting row:', row);
+            const result = await post({ action: 'insert' }, { row });
+            if (!result.success) throw new Error(result.error);
             return { success: true, student: { ...row, id } };
         } catch (err) {
-            console.error('createStudent Error:', err.response?.data || err.message);
-            return { success: false, message: err.response?.data?.error || err.message };
+            console.error('createStudent Error:', err.message);
+            return { success: false, message: err.message };
         }
     },
 
     // ═══════════════════════════════════════════════════════════
-    // UPDATE STUDENT PROFILE — updates profile fields across ALL
-    // rows for this student (all months share the same base data)
+    // UPDATE STUDENT PROFILE
+    // Updates profile columns across all rows for this student.
     // ═══════════════════════════════════════════════════════════
     updateProfile: async (id, updates) => {
         try {
             const fmt = { ...updates };
             if (typeof fmt.is_free === 'boolean') fmt.is_free = fmt.is_free ? 'TRUE' : 'FALSE';
             if (typeof fmt.current_month_paid === 'boolean') fmt.current_month_paid = fmt.current_month_paid ? 'TRUE' : 'FALSE';
+            // Remove payment-row-specific fields from profile updates
+            delete fmt.month; delete fmt.year; delete fmt.status;
+            delete fmt.amount; delete fmt.row_key;
 
-            // Remove payment-specific fields from profile updates (those go through recordPayment)
-            delete fmt.month;
-            delete fmt.year;
-            delete fmt.status;
-            delete fmt.amount;
-            delete fmt.row_key;
-
-            // SheetDB PATCH by column value: update all rows where id = studentId
-            await sheetPatch(
-                `${SHEETDB_API_URL}/id/${id}?sheet=${STUDENT_SHEET}`,
-                fmt
-            );
+            const result = await post({ action: 'update', col: 'id', val: String(id) }, { updates: fmt });
+            if (!result.success) throw new Error(result.error);
             return { success: true };
         } catch (err) {
-            console.error('updateProfile Error:', err.response?.data || err.message);
+            console.error('updateProfile Error:', err.message);
             return { success: false, message: err.message };
         }
     },
 
     // ═══════════════════════════════════════════════════════════
-    // DELETE STUDENT — removes ALL rows for this student id
+    // DELETE STUDENT
+    // Removes all rows for this student id.
     // ═══════════════════════════════════════════════════════════
     deleteStudent: async (_token, id) => {
         try {
-            await axios.delete(`${SHEETDB_API_URL}/id/${id}?sheet=${STUDENT_SHEET}`);
+            const result = await post({ action: 'delete', col: 'id', val: String(id) }, {});
+            if (!result.success) throw new Error(result.error);
             return { success: true };
         } catch (err) {
             console.error('deleteStudent Error:', err.message);
@@ -200,44 +192,36 @@ export const sheetDbApi = {
     },
 
     // ═══════════════════════════════════════════════════════════
-    // RECORD PAYMENT — upsert the payment status for a specific
-    //                  student + month + year.
-    //   - If the row exists (by row_key): PATCH status/amount
-    //   - If not: POST a new row (happens when switching months)
+    // RECORD PAYMENT
+    // Upserts the payment status for a student + month + year.
+    //   - Row exists (by row_key) → update status/amount
+    //   - Row missing              → insert new row for that month
     // ═══════════════════════════════════════════════════════════
     recordPayment: async (studentId, month, year, amount, isPaid) => {
         const rk = rowKey(studentId, month, year);
-        const monthStr = String(month);
-        const yearStr = String(year);
         const isFree = parseFloat(amount) === 0;
         const status = isFree ? 'Free' : (isPaid ? 'Paid' : 'Unpaid');
         const paymentDate = isPaid ? new Date().toISOString() : '';
 
-        console.log(`[recordPayment] rk:${rk} status:${status} amount:${amount}`);
+        console.log(`[recordPayment] rk:${rk} status:${status}`);
 
         try {
-            // Check if row exists for this student+month+year
-            const existing = await safeSearch({ row_key: rk });
-            console.log(`[recordPayment] existing rows:`, existing.length);
+            // Check if row already exists for this student-month-year
+            const searchResult = await get({ action: 'search', col: 'row_key', val: rk });
+            const existing = searchResult.success ? (searchResult.data || []) : [];
 
             if (existing.length > 0) {
                 // ── UPDATE existing row ──────────────────────────────
-                console.log(`[recordPayment] PATCHing row_key:${rk}`);
-                await sheetPatch(
-                    `${SHEETDB_API_URL}/id/${rk}?sheet=${STUDENT_SHEET}`,
-                    {
-                        amount: String(amount),
-                        status,
-                        current_month_paid: isPaid ? 'TRUE' : 'FALSE',
-                        payment_date: paymentDate
-                    }
+                const result = await post(
+                    { action: 'update', col: 'row_key', val: rk },
+                    { updates: { amount: String(amount), status, current_month_paid: isPaid ? 'TRUE' : 'FALSE', payment_date: paymentDate } }
                 );
-                console.log(`[recordPayment] PATCH success`);
+                if (!result.success) throw new Error(result.error);
+                console.log(`[recordPayment] UPDATED row_key:${rk}`);
             } else {
-                // ── CREATE new row for this month ────────────────────
-                // First fetch the student's profile data to fill in all columns
-                const studentRows = await safeSearch({ id: String(studentId) });
-                const profile = studentRows[0] || {};
+                // ── INSERT new row for this month ────────────────────
+                const profileResult = await get({ action: 'search', col: 'id', val: String(studentId) });
+                const profile = (profileResult.data || [])[0] || {};
 
                 const newRow = {
                     row_key: rk,
@@ -250,39 +234,35 @@ export const sheetDbApi = {
                     subscription_start: profile.subscription_start || '',
                     subscription_end: profile.subscription_end || '',
                     current_month_paid: isPaid ? 'TRUE' : 'FALSE',
-                    month: monthStr,
-                    year: yearStr,
+                    month: String(month),
+                    year: String(year),
                     amount: String(amount),
                     status,
-                    payment_date: paymentDate
+                    payment_date: paymentDate,
+                    created_at: profile.created_at || ''
                 };
-
-                console.log(`[recordPayment] POSTing new row:`, newRow);
-                await sheetPost(`${SHEETDB_API_URL}?sheet=${STUDENT_SHEET}`, newRow);
-                console.log(`[recordPayment] POST success`);
+                const result = await post({ action: 'insert' }, { row: newRow });
+                if (!result.success) throw new Error(result.error);
+                console.log(`[recordPayment] INSERTED row_key:${rk}`);
             }
             return { success: true };
         } catch (err) {
-            console.error('[recordPayment] FAILED:', err.response?.status, err.response?.data || err.message);
+            console.error('[recordPayment] FAILED:', err.message);
             return { success: false, message: err.message };
         }
     },
 
     // ═══════════════════════════════════════════════════════════
-    // AUTH
+    // AUTH & STUBS
     // ═══════════════════════════════════════════════════════════
     login: async () => ({ success: false, message: 'Student login disabled' }),
     logout: async () => ({ success: true }),
-
-    // Stubs
     getResources: async () => ({ success: true, resources: [] }),
-    createResource: async () => ({ success: false, message: 'Resources sheet not set up' }),
-    deleteResource: async () => ({ success: false, message: 'Resources sheet not set up' }),
+    createResource: async () => ({ success: false, message: 'Not implemented' }),
+    deleteResource: async () => ({ success: false, message: 'Not implemented' }),
     getProgress: async () => ({ success: true, progress: [] }),
-    updateProgress: async () => ({ success: false, message: 'Progress sheet not set up' }),
-
-    // No longer needed — kept as no-op so old calls don't crash
-    syncPaymentRecords: async () => ({ success: true }),
+    updateProgress: async () => ({ success: false, message: 'Not implemented' }),
+    syncPaymentRecords: async () => ({ success: true }), // no longer needed
 };
 
 export default sheetDbApi;
