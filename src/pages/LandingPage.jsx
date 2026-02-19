@@ -17,7 +17,7 @@ const LandingPage = () => {
     useEffect(() => {
         const timer = setInterval(() => {
             setCurrentSlide((prev) => (prev + 1) % slides.length);
-        }, 5000);
+        }, 3000);
 
         const observerOptions = {
             threshold: 0.1,
@@ -59,34 +59,39 @@ const LandingPage = () => {
 
     const features = [
         {
-            title: 'Imperial Study Hall',
-            desc: 'Ergonomic seating in a focused atmosphere.',
-            image: 'https://images.unsplash.com/photo-1551033406-611cf9a28f67?auto=format&fit=crop&w=600&q=50&fm=webp',
-            span: 'bento-span-2 bento-row-2'
+            title: 'Pure Drinking Water',
+            desc: 'Fresh, clean drinking water available throughout the day for all scholars.',
+            image: 'https://images.unsplash.com/photo-1548839140-29a749e1cf4d?auto=format&fit=crop&w=600&q=50&fm=webp',
+            span: 'bento-span-2 bento-row-2',
+            icon: '💧'
         },
         {
-            title: 'Climate Controlled',
-            desc: 'Centralized AC for year-round comfort.',
+            title: 'Air Conditioning',
+            desc: 'Centralized AC keeps the hall cool and comfortable all year round.',
             image: 'https://images.unsplash.com/photo-1518306727298-4c17e1bf6942?auto=format&fit=crop&w=600&q=50&fm=webp',
-            span: ''
+            span: '',
+            icon: '❄️'
         },
         {
-            title: 'Digital Sanctum',
-            desc: 'Ultra high-speed fiber connectivity.',
+            title: 'High-Speed WiFi',
+            desc: 'Ultra-fast fiber internet connectivity for research and learning.',
             image: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=600&q=50&fm=webp',
-            span: ''
+            span: '',
+            icon: '📶'
         },
         {
-            title: 'Secure Archives',
-            desc: 'Personal lockers and 24/7 CCTV.',
-            image: 'https://images.unsplash.com/photo-1549416878-b9ca95e26903?auto=format&fit=crop&w=600&q=50&fm=webp',
-            span: 'bento-span-2'
+            title: 'Comfortable Seating',
+            desc: 'Ergonomic chairs designed for long study sessions without fatigue.',
+            image: 'https://images.unsplash.com/photo-1551033406-611cf9a28f67?auto=format&fit=crop&w=600&q=50&fm=webp',
+            span: 'bento-span-2',
+            icon: '🪑'
         },
         {
-            title: 'Royal Cafe',
-            desc: 'Premium refreshments for scholars.',
-            image: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=600&q=50&fm=webp',
-            span: ''
+            title: 'Deep Focus Silence',
+            desc: 'A strictly silent environment crafted for undistracted, deep work.',
+            image: 'https://images.unsplash.com/photo-1481627834876-b7833e8f5570?auto=format&fit=crop&w=600&q=50&fm=webp',
+            span: '',
+            icon: '🤫'
         }
     ];
 
@@ -144,7 +149,7 @@ const LandingPage = () => {
                             {slides.map((slide, index) => (
                                 <div
                                     key={index}
-                                    className={`absolute inset-0 transition-opacity duration-1000 ease-in-out ${index === currentSlide ? 'opacity-100' : 'opacity-0'}`}
+                                    className={`absolute inset-0 transition-opacity duration-500 ease-in-out ${index === currentSlide ? 'opacity-100' : 'opacity-0'}`}
                                 >
                                     <img
                                         src={slide.url}
@@ -237,21 +242,43 @@ const LandingPage = () => {
                         </p>
                     </div>
 
-                    <div className="relative aspect-video rounded-[4rem] overflow-hidden shadow-[0_50px_100px_-20px_rgba(0,0,0,0.15)] border-[12px] border-slate-50 group cursor-pointer reveal">
-                        {/* 
-                            For the final video: 
-                            Replace the <img> below with an <iframe> if using YouTube/Vimeo 
-                            OR a <video> tag if using Supabase Storage.
-                        */}
-                        <img
-                            src="https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1200&q=50&fm=webp"
-                            alt="Library Ambience"
-                            loading="lazy"
-                            className="w-full h-full object-cover transition-transform duration-1000 group-hover:scale-105"
-                        />
-                        <div className="absolute inset-0 bg-slate-950/20 group-hover:bg-slate-950/40 transition-all flex items-center justify-center">
-                            <div className="w-28 h-28 bg-white/20 backdrop-blur-xl rounded-full flex items-center justify-center border border-white/40 shadow-2xl group-hover:scale-110 transition-transform">
-                                <div className="w-0 h-0 border-t-[14px] border-t-transparent border-l-[28px] border-l-white border-b-[14px] border-b-transparent ml-2"></div>
+                    <div className="relative aspect-video rounded-[4rem] overflow-hidden shadow-[0_50px_100px_-20px_rgba(0,0,0,0.15)] border-[12px] border-slate-50 group cursor-pointer reveal active">
+                        {/*
+                         * VIDEO EMBED INSTRUCTIONS:
+                         * Option A – YouTube/Vimeo (recommended, free CDN):
+                         *   Replace this entire block with:
+                         *   <iframe
+                         *     src="https://www.youtube.com/embed/YOUR_VIDEO_ID?autoplay=1&mute=1&loop=1&controls=0&playlist=YOUR_VIDEO_ID"
+                         *     className="w-full h-full object-cover"
+                         *     allow="autoplay; fullscreen"
+                         *     frameBorder="0"
+                         *   />
+                         *
+                         * Option B – Self-hosted MP4 (host in /public folder):
+                         *   Recommended: 720p, H.264, ≤10 MB, ~1-2 Mbps
+                         *   Keep video length 30-60s for fast loading.
+                         */}
+                        <video
+                            className="w-full h-full object-cover"
+                            autoPlay
+                            muted
+                            loop
+                            playsInline
+                            poster="https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1200&q=50&fm=webp"
+                        >
+                            {/* Add your video source here, e.g.: */}
+                            {/* <source src="/library-tour.mp4" type="video/mp4" /> */}
+                            {/* Fallback image while no video is set */}
+                            <img
+                                src="https://images.unsplash.com/photo-1497366216548-37526070297c?auto=format&fit=crop&w=1200&q=50&fm=webp"
+                                alt="Library Ambience"
+                                className="w-full h-full object-cover"
+                            />
+                        </video>
+                        {/* Play overlay — hides once video is playing */}
+                        <div className="absolute inset-0 bg-slate-950/10 group-hover:bg-slate-950/30 transition-all flex items-center justify-center pointer-events-none">
+                            <div className="w-24 h-24 bg-white/20 backdrop-blur-xl rounded-full flex items-center justify-center border border-white/40 shadow-2xl group-hover:scale-110 transition-transform">
+                                <div className="w-0 h-0 border-t-[12px] border-t-transparent border-l-[24px] border-l-white border-b-[12px] border-b-transparent ml-2"></div>
                             </div>
                         </div>
                     </div>
@@ -295,18 +322,25 @@ const LandingPage = () => {
                                 </div>
                             </div>
 
-                            <button className="btn-premium btn-gold text-lg px-12 py-6 rounded-[2rem]">
+                            <a
+                                href="https://www.google.com/maps/place/Dnyanpeeth+abhyasika/@20.3389687,76.2626183,17z/data=!3m1!4b1!4m6!3m5!1s0x3bda1100184d94f5:0x5234a9d1ab209752!8m2!3d20.3389687!4d76.2626183!16s%2Fg%2F11y3y0_b8r"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="btn-premium btn-gold text-lg px-12 py-6 rounded-[2rem] inline-block text-center"
+                            >
                                 Schedule a Tour
-                            </button>
+                            </a>
                         </div>
 
-                        <div className="flex-[1.5] relative reveal">
-                            <div className="h-full min-h-[500px] rounded-[4rem] overflow-hidden shadow-2xl border-8 border-white group">
+                        <div className="w-full lg:flex-[1.5] relative reveal">
+                            <div className="h-[420px] sm:h-[480px] lg:h-full lg:min-h-[500px] rounded-[2rem] lg:rounded-[4rem] overflow-hidden shadow-2xl border-4 lg:border-8 border-white group">
                                 {loadMap ? (
                                     <iframe
                                         src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3741.0641425153417!2d76.2626183!3d20.338968700000002!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x3bda1100184d94f5%3A0x5234a9d1ab209752!2sDnyanpeeth%20abhyasika!5e0!3m2!1sen!2sin!4v1770967083868!5m2!1sen!2sin"
+                                        width="100%"
+                                        height="100%"
                                         className="w-full h-full grayscale hover:grayscale-0 transition-all duration-700"
-                                        style={{ border: 0 }}
+                                        style={{ border: 0, display: 'block' }}
                                         allowFullScreen=""
                                         loading="lazy"
                                         referrerPolicy="no-referrer-when-downgrade"
@@ -346,7 +380,7 @@ const LandingPage = () => {
             </section>
 
             {/* Footer */}
-            <footer className="bg-white border-t border-slate-100 py-24 px-6 relative overflow-hidden">
+            <footer className="bg-white border-t border-slate-50 py-12 px-6 relative overflow-hidden">
                 <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-12">
                     <div className="flex items-center gap-5 transition-transform hover:scale-105 cursor-pointer">
                         <div className="w-16 h-16 bg-slate-900 rounded-[1.5rem] flex items-center justify-center text-white text-2xl shadow-2xl">
@@ -359,7 +393,7 @@ const LandingPage = () => {
                     </div>
                     <div className="flex flex-col items-center md:items-end gap-3">
                         <p className="text-slate-400 text-xs font-bold uppercase tracking-[0.3em]">&copy; 2024 Study Library. All Rights Reserved.</p>
-                        <p className="text-slate-900 font-black text-sm tracking-tight">Crafted with Royal Precision & Academic Love.</p>
+                        <p className="text-slate-900 font-black text-sm tracking-tight">Mangesh Sureshrao Khedekar</p>
                     </div>
                 </div>
             </footer>

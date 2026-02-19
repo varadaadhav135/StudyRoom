@@ -1,285 +1,250 @@
 import axios from 'axios';
 
-// Get API URL from env or use a placeholder that the user needs to update
 const SHEETDB_API_URL = import.meta.env.VITE_SHEETDB_API_URL || 'https://sheetdb.io/api/v1/tjpqhngurtnvq';
 
+const STUDENT_SHEET = 'Student';
+const PAYMENT_SHEET = 'Payment';
+
+// ─────────────────────────────────────────────────────────────
+// Sheet Governance
+//
+// Student sheet columns:
+//   id | username | email | mobile | aadhar_number | monthly_fee
+//   is_free | subscription_start | subscription_end
+//   current_month_paid | created_at
+//
+// Payment sheet columns:
+//   id | month | year | amount | status | payment_date
+//
+//   id = composite key: "{studentId}-{month}-{year}"
+//        e.g. "369-1-2026" → student 369, February 2026
+// ─────────────────────────────────────────────────────────────
+
+const paymentRowId = (studentId, month, year) => `${studentId}-${month}-${year}`;
+
+// Parse student_id back out of the composite id for dashboard use
+const parsePayId = (id = '') => {
+    const parts = String(id).split('-');
+    const year = parts.pop();
+    const month = parts.pop();
+    const student_id = parts.join('-');
+    return { student_id, month, year };
+};
+
+// SheetDB returns 404 when search has 0 results — convert to []
+const safeSearch = async (sheet, params) => {
+    try {
+        const qs = Object.entries(params)
+            .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+            .join('&');
+        const res = await axios.get(`${SHEETDB_API_URL}/search?${qs}&sheet=${sheet}`);
+        return Array.isArray(res.data) ? res.data : [];
+    } catch (err) {
+        if (err.response?.status === 404) return [];
+        throw err;
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// SheetDB body formats:
+//   POST  → send row directly (SheetDB accepts plain object)
+//   PATCH → must wrap in { data: {...} } for updates to apply
+// ─────────────────────────────────────────────────────────────
+const sheetPost = (url, row) => axios.post(url, row);               // direct object
+const sheetPatch = (url, updates) => axios.patch(url, { data: updates }); // must be wrapped
+
 export const sheetDbApi = {
-    // ========================================================================
-    // STUDENT MANAGEMENT
-    // ========================================================================
+
+    // ═══════════════════════════════════════════════════════════
+    // STUDENT MANAGEMENT  →  "Student" sheet
+    // ═══════════════════════════════════════════════════════════
 
     getStudents: async () => {
         try {
-            const response = await axios.get(SHEETDB_API_URL);
-            // SheetDB returns an array of objects
-            // We need to map them to match the expected structure
-            // Supabase returns { success: true, students: [...] }
-            // And each student has subscriptions array for the dashboard to display dates
-
-            const students = response.data.map((row, index) => {
-                // Synthesize subscription object from flat sheet data
-                const subscription = {
+            const res = await axios.get(`${SHEETDB_API_URL}?sheet=${STUDENT_SHEET}`);
+            const students = (res.data || []).map(row => ({
+                id: row.id,
+                username: row.username,
+                email: row.email,
+                mobile: row.mobile,
+                aadhar_number: row.aadhar_number,
+                monthly_fee: row.monthly_fee,
+                is_free: row.is_free === 'TRUE' || parseFloat(row.monthly_fee) === 0,
+                current_month_paid: row.current_month_paid === 'TRUE',
+                created_at: row.created_at,
+                subscriptions: [{
                     start_date: row.subscription_start,
                     end_date: row.subscription_end,
                     amount: row.monthly_fee,
-                    status: row.current_month_paid === 'TRUE' || row.current_month_paid === true ? 'active' : 'pending'
-                };
-
-                return {
-                    id: row.id,
-                    username: row.username,
-                    email: row.email,
-                    mobile: row.mobile,
-                    aadhar_number: row.aadhar_number,
-                    monthly_fee: row.monthly_fee,
-                    current_month_paid: row.current_month_paid === 'TRUE' || row.current_month_paid === true,
-                    subscriptions: [subscription] // Mock array to match Supabase structure
-                };
-            });
-
+                    status: row.current_month_paid === 'TRUE' ? 'active' : 'pending'
+                }]
+            }));
             return { success: true, students };
-        } catch (error) {
-            console.error('SheetDB Fetch Error:', error);
-            return { success: false, message: error.message, students: [] };
+        } catch (err) {
+            console.error('getStudents Error:', err);
+            return { success: false, message: err.message, students: [] };
         }
     },
 
-    createStudent: async (token, studentData) => {
+    createStudent: async (_token, data) => {
         try {
-            // Generate a random ID if not provided (SheetDB doesn't auto-increment like SQL)
-            const id = studentData.id || `STU-${Math.floor(Math.random() * 10000)}`;
-
-            const newStudent = {
+            const id = data.id || `STU-${Date.now()}`;
+            const row = {
                 id,
-                username: studentData.username,
-                email: studentData.email,
-                mobile: studentData.mobile,
-                aadhar_number: studentData.aadhar_number,
-                monthly_fee: studentData.monthly_fee,
-                subscription_start: studentData.subscription_start,
-                subscription_end: studentData.subscription_end,
-                current_month_paid: studentData.current_month_paid ? 'TRUE' : 'FALSE'
+                username: data.username,
+                email: data.email,
+                mobile: data.mobile,
+                aadhar_number: data.aadhar_number,
+                monthly_fee: data.is_free ? 0 : data.monthly_fee,
+                is_free: data.is_free ? 'TRUE' : 'FALSE',
+                subscription_start: data.subscription_start,
+                subscription_end: data.subscription_end,
+                current_month_paid: data.paid_this_month ? 'TRUE' : 'FALSE',
+                created_at: new Date().toISOString()
             };
-
-            await axios.post(SHEETDB_API_URL, newStudent);
-
-            return { success: true, message: 'Student created successfully', student: newStudent };
-        } catch (error) {
-            console.error('SheetDB Create Error:', error);
-            if (error.response) {
-                console.error('Error Response Data:', error.response.data);
-                console.error('Error Status:', error.response.status);
-            }
-            return { success: false, message: error.response?.data?.error || error.message };
-        }
-    },
-
-    deleteStudent: async (token, id) => {
-        try {
-            // SheetDB delete syntax: API_URL/id/{id}
-            await axios.delete(`${SHEETDB_API_URL}/id/${id}`);
-            return { success: true, message: 'Student deleted successfully' };
-        } catch (error) {
-            console.error('SheetDB Delete Error:', error);
-            return { success: false, message: error.message };
+            await sheetPost(`${SHEETDB_API_URL}?sheet=${STUDENT_SHEET}`, row);
+            return { success: true, student: { ...row, id } };
+        } catch (err) {
+            console.error('createStudent Error:', err.response?.data || err.message);
+            return { success: false, message: err.response?.data?.error || err.message };
         }
     },
 
     updateProfile: async (id, updates) => {
         try {
-            // Convert boolean to string for SheetDB if needed
-            const formattedUpdates = { ...updates };
-            if (typeof updates.current_month_paid === 'boolean') {
-                formattedUpdates.current_month_paid = updates.current_month_paid ? 'TRUE' : 'FALSE';
-            }
-
-            // SheetDB update syntax: API_URL/id/{id}
-            await axios.patch(`${SHEETDB_API_URL}/id/${id}`, formattedUpdates);
-            return { success: true, message: 'Profile updated successfully' };
-        } catch (error) {
-            console.error('SheetDB Update Error:', error);
-            return { success: false, message: error.message };
+            const fmt = { ...updates };
+            if (typeof fmt.is_free === 'boolean') fmt.is_free = fmt.is_free ? 'TRUE' : 'FALSE';
+            if (typeof fmt.current_month_paid === 'boolean') fmt.current_month_paid = fmt.current_month_paid ? 'TRUE' : 'FALSE';
+            await sheetPatch(`${SHEETDB_API_URL}/id/${id}?sheet=${STUDENT_SHEET}`, fmt);
+            return { success: true };
+        } catch (err) {
+            console.error('updateProfile Error:', err.response?.data || err.message);
+            return { success: false, message: err.message };
         }
     },
 
-    // ========================================================================
-    // RESOURCE MANAGEMENT (New Tabs)
-    // ========================================================================
-
-    getResources: async () => {
+    deleteStudent: async (_token, id) => {
         try {
-            const response = await axios.get(`${SHEETDB_API_URL}?sheet=Resources`);
-            return { success: true, resources: response.data };
-        } catch (error) {
-            console.error('SheetDB Get Resources Error:', error);
-            // Return empty array if sheet/tab doesn't exist yet to prevent crash
-            return { success: true, resources: [] };
+            await axios.delete(`${SHEETDB_API_URL}/id/${id}?sheet=${STUDENT_SHEET}`);
+            return { success: true };
+        } catch (err) {
+            console.error('deleteStudent Error:', err.message);
+            return { success: false, message: err.message };
         }
     },
 
-    createResource: async (token, resourceData) => {
-        try {
-            const id = resourceData.id || `RES-${Math.floor(Math.random() * 10000)}`;
-            const newResource = {
-                id,
-                ...resourceData,
-                uploaded_by: 'Admin',
-                created_at: new Date().toISOString()
-            };
-
-            await axios.post(`${SHEETDB_API_URL}?sheet=Resources`, newResource);
-            return { success: true, message: 'Resource created', resource: newResource };
-        } catch (error) {
-            console.error('SheetDB Create Resource Error:', error);
-            return { success: false, message: error.message };
-        }
-    },
-
-    deleteResource: async (token, id) => {
-        try {
-            // Delete from Resources tab
-            await axios.delete(`${SHEETDB_API_URL}/id/${id}?sheet=Resources`);
-            return { success: true, message: 'Resource deleted' };
-        } catch (error) {
-            console.error('SheetDB Delete Resource Error:', error);
-            return { success: false, message: error.message };
-        }
-    },
-
-    // ========================================================================
-    // STUDENT PROGRESS (New Tabs)
-    // ========================================================================
-
-    getProgress: async () => {
-        try {
-            const response = await axios.get(`${SHEETDB_API_URL}?sheet=Progress`);
-            return { success: true, progress: response.data };
-        } catch (error) {
-            console.error('SheetDB Get Progress Error:', error);
-            return { success: true, progress: [] };
-        }
-    },
-
-    updateProgress: async (token, resourceId, status) => {
-        try {
-            // We need the student ID. In a real app, we extract it from token or context.
-            // For now, let's assume we are tracking it by a simple search or passing it.
-            // Since this function signature in StudentDashboard is (null, resourceId, status),
-            // and we lack the student ID in args, we might need to rely on localStorage user or similar.
-            // However, `sheetDbApi` is stateless.
-            // Let's check `localApi` behavior: it used `loadData` which had all data.
-            // Here, we need to know WHO IS LOGGED IN.
-            // Ideally, we pass studentId.
-            // For now, let's mock it or fetch current user if possible, but simplest is to ask user to pass it.
-            // But we can't change the call site easily without refactoring Dashboard.
-            // Wait, StudentDashboard.jsx line 77: `api.updateProgress(null, resourceId, status)`
-            // It assumes the API knows the user (like via token or session).
-            // `localApi` was using localStorage session.
-
-            // Allow obtaining student ID from localStorage for now as a bridge
-            const storedUser = localStorage.getItem('user') || localStorage.getItem('imperial_library_session');
-            let studentId = 'unknown';
-            if (storedUser) {
-                try {
-                    const parsed = JSON.parse(storedUser);
-                    // Adapt to different storage shapes
-                    studentId = parsed.id || parsed.user?.id || 'unknown';
-                } catch (e) { }
-            }
-
-            // 1. Check if progress entry exists
-            const searchUrl = `${SHEETDB_API_URL}/search?student_id=${studentId}&resource_id=${resourceId}&sheet=Progress`;
-            const searchRes = await axios.get(searchUrl);
-
-            if (searchRes.data && searchRes.data.length > 0) {
-                // 2a. Update existing
-                // We need the ID of the progress row, not resource ID
-                const progressRowId = searchRes.data[0].id;
-                await axios.patch(`${SHEETDB_API_URL}/id/${progressRowId}?sheet=Progress`, {
-                    status,
-                    updated_at: new Date().toISOString()
-                });
-            } else {
-                // 2b. Create new
-                const newProgress = {
-                    id: `PROG-${Math.floor(Math.random() * 100000)}`,
-                    student_id: studentId,
-                    resource_id: resourceId,
-                    status,
-                    updated_at: new Date().toISOString()
-                };
-                await axios.post(`${SHEETDB_API_URL}?sheet=Progress`, newProgress);
-            }
-
-            return { success: true, message: 'Progress updated' };
-        } catch (error) {
-            console.error('SheetDB Progress Error:', error);
-            return { success: false, message: error.message };
-        }
-    },
-
-    // ========================================================================
-    // PAYMENT HISTORY (New "Payments" Tab)
-    // ========================================================================
+    // ═══════════════════════════════════════════════════════════
+    // PAYMENT MANAGEMENT  →  "Payment" sheet
+    //
+    // id format: "{studentId}-{month}-{year}"  e.g. "369-1-2026"
+    // One row per student per month.
+    // ═══════════════════════════════════════════════════════════
 
     getPayments: async () => {
         try {
-            const response = await axios.get(`${SHEETDB_API_URL}?sheet=Payments`);
-            return { success: true, payments: response.data };
-        } catch (error) {
-            console.error('SheetDB Get Payments Error:', error);
+            const res = await axios.get(`${SHEETDB_API_URL}?sheet=${PAYMENT_SHEET}`);
+            const payments = (res.data || []).map(row => ({
+                ...row,
+                ...parsePayId(row.id) // injects { student_id, month, year }
+            }));
+            return { success: true, payments };
+        } catch (err) {
+            console.error('getPayments Error:', err.message);
             return { success: true, payments: [] };
         }
     },
 
-    recordPayment: async (studentId, month, year, amount, status) => {
-        try {
-            // 1. Check if payment exists for this month/year
-            const monthStr = String(month);
-            const yearStr = String(year);
-            const searchUrl = `${SHEETDB_API_URL}/search?student_id=${studentId}&month=${monthStr}&year=${yearStr}&sheet=Payments`;
-            const searchRes = await axios.get(searchUrl);
+    // Called on: student registration + every status toggle in the dashboard
+    recordPayment: async (studentId, month, year, amount, isPaid) => {
+        const pid = paymentRowId(studentId, month, year);
+        const monthStr = String(month);
+        const yearStr = String(year);
+        const paymentDate = isPaid ? new Date().toISOString() : '';
 
-            if (searchRes.data && searchRes.data.length > 0) {
-                // Update existing
-                const paymentId = searchRes.data[0].id;
-                await axios.patch(`${SHEETDB_API_URL}/id/${paymentId}?sheet=Payments`, {
-                    amount,
-                    status: status ? 'Paid' : 'Unpaid',
-                    payment_date: new Date().toISOString()
-                });
+        console.log(`[Payment] recordPayment called → id:${pid} status:${isPaid ? 'Paid' : 'Unpaid'} amount:${amount}`);
+
+        try {
+            // Check if a row already exists for this student+month+year
+            const existing = await safeSearch(PAYMENT_SHEET, { id: pid });
+            console.log(`[Payment] existing rows found:`, existing.length);
+
+            if (existing.length > 0) {
+                // ── UPDATE existing row ─────────────────────────────────
+                console.log(`[Payment] PATCHING row id:${pid}`);
+                await sheetPatch(
+                    `${SHEETDB_API_URL}/id/${pid}?sheet=${PAYMENT_SHEET}`,
+                    {
+                        amount: String(amount),
+                        status: isPaid ? 'Paid' : 'Unpaid',
+                        payment_date: paymentDate
+                    }
+                );
+                console.log(`[Payment] PATCH success`);
             } else {
-                // Create new
-                const newPayment = {
-                    id: `PAY-${Math.floor(Math.random() * 100000)}`,
-                    student_id: studentId,
-                    month: monthStr,
-                    year: yearStr,
-                    amount,
-                    status: status ? 'Paid' : 'Unpaid',
-                    payment_date: new Date().toISOString()
-                };
-                await axios.post(`${SHEETDB_API_URL}?sheet=Payments`, newPayment);
+                // ── CREATE new row ──────────────────────────────────────
+                console.log(`[Payment] POSTing new row id:${pid}`);
+                await sheetPost(
+                    `${SHEETDB_API_URL}?sheet=${PAYMENT_SHEET}`,
+                    {
+                        id: pid,
+                        month: monthStr,
+                        year: yearStr,
+                        amount: String(amount),
+                        status: isPaid ? 'Paid' : 'Unpaid',
+                        payment_date: paymentDate
+                    }
+                );
+                console.log(`[Payment] POST success`);
             }
-            return { success: true, message: 'Payment recorded' };
-        } catch (error) {
-            console.error('SheetDB Payment Error:', error);
-            return { success: false, message: error.message };
+            return { success: true };
+        } catch (err) {
+            console.error('[Payment] recordPayment FAILED:', err.response?.status, err.response?.data || err.message);
+            return { success: false, message: err.message };
         }
     },
 
-    // ========================================================================
-    // AUTHENTICATION (Mocked/Not used for Admin)
-    // ========================================================================
-    login: async (email, password) => {
-        // Admin login is handled by AuthContext using .env
-        // This would be for student login if we re-enabled it
-        return { success: false, message: 'Student login disabled' };
+    // Auto-create "Unpaid" rows for students with no Payment entry for the month.
+    // Called on dashboard load so every paid student appears in the Payment sheet.
+    syncPaymentRecords: async (students, month, year) => {
+        try {
+            const allPaymentsRes = await axios.get(`${SHEETDB_API_URL}?sheet=${PAYMENT_SHEET}`).catch(() => ({ data: [] }));
+            const existing = new Set((allPaymentsRes.data || []).map(p => String(p.id)));
+
+            const toCreate = students.filter(s =>
+                parseFloat(s.monthly_fee) > 0 &&
+                !existing.has(paymentRowId(s.id, month, year))
+            );
+
+            for (const s of toCreate) {
+                const pid = paymentRowId(s.id, month, year);
+                await sheetPost(`${SHEETDB_API_URL}?sheet=${PAYMENT_SHEET}`, {
+                    id: pid,
+                    month: String(month),
+                    year: String(year),
+                    amount: String(s.monthly_fee),
+                    status: 'Unpaid',
+                    payment_date: ''
+                });
+            }
+            return { success: true };
+        } catch (err) {
+            console.error('syncPaymentRecords Error:', err.message);
+            return { success: false };
+        }
     },
 
-    logout: async () => {
-        return { success: true };
-    }
+    // ═══════════════════════════════════════════════════════════
+    // AUTH  (Admin login via AuthContext — not SheetDB)
+    // ═══════════════════════════════════════════════════════════
+    login: async () => ({ success: false, message: 'Student login disabled' }),
+    logout: async () => ({ success: true }),
+
+    // Stubs for unused sheets
+    getResources: async () => ({ success: true, resources: [] }),
+    createResource: async () => ({ success: false, message: 'Resources sheet not set up' }),
+    deleteResource: async () => ({ success: false, message: 'Resources sheet not set up' }),
+    getProgress: async () => ({ success: true, progress: [] }),
+    updateProgress: async () => ({ success: false, message: 'Progress sheet not set up' }),
 };
 
 export default sheetDbApi;

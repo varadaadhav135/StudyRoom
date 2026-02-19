@@ -10,6 +10,7 @@ import FinancialAnalytics from '../components/Dashboard/FinancialAnalytics';
 const AdminDashboard = () => {
     const { user, logout } = useAuth();
     const [loading, setLoading] = useState(true);
+    const [submitting, setSubmitting] = useState(false); // (f) prevent double-submit
     const [students, setStudents] = useState([]);
     const [payments, setPayments] = useState([]); // Store all payment history
     const [showStudentModal, setShowStudentModal] = useState(false);
@@ -31,7 +32,8 @@ const AdminDashboard = () => {
         monthly_fee: '',
         subscription_start: new Date().toISOString().split('T')[0],
         subscription_end: '',
-        is_free: false // New field for explicit free status
+        is_free: false,
+        paid_this_month: false // (g) first-month payment checkbox
     });
 
     useEffect(() => {
@@ -41,17 +43,33 @@ const AdminDashboard = () => {
     const fetchData = async () => {
         setLoading(true);
         try {
-            // Fetch students AND payments
+            // Fetch students AND payments in parallel
             const [resStudents, resPayments] = await Promise.all([
                 api.getStudents(),
                 api.getPayments ? api.getPayments() : Promise.resolve({ success: true, payments: [] })
             ]);
 
-            if (resStudents.success) {
-                setStudents(resStudents.students || []);
-            }
-            if (resPayments.success) {
-                setPayments(resPayments.payments || []);
+            const loadedStudents = resStudents.success ? (resStudents.students || []) : [];
+            const loadedPayments = resPayments.success ? (resPayments.payments || []) : [];
+
+            if (resStudents.success) setStudents(loadedStudents);
+            if (resPayments.success) setPayments(loadedPayments);
+
+            // Sync Payment sheet — creates "Unpaid" rows for students not yet in Payment sheet
+            // for the current month, so their IDs appear in Google Sheets automatically
+            if (resStudents.success && api.syncPaymentRecords) {
+                api.syncPaymentRecords(
+                    loadedStudents,
+                    new Date().getMonth(),
+                    new Date().getFullYear()
+                ).then(() => {
+                    // Refresh payments after sync so UI picks up newly created rows
+                    if (api.getPayments) {
+                        api.getPayments().then(r => {
+                            if (r.success) setPayments(r.payments || []);
+                        });
+                    }
+                });
             }
         } catch (error) {
             console.error('Failed to load data:', error);
@@ -63,14 +81,15 @@ const AdminDashboard = () => {
 
     const handleCreateStudent = async (e) => {
         e.preventDefault();
+        if (submitting) return;
 
         if (studentForm.aadhar_number && !/^\d{12}$/.test(studentForm.aadhar_number)) {
             toast.error('Aadhar card number must be exactly 12 digits');
             return;
         }
 
+        setSubmitting(true);
         try {
-            // Ensure fee is 0 if free
             const payload = {
                 ...studentForm,
                 monthly_fee: studentForm.is_free ? 0 : studentForm.monthly_fee
@@ -84,6 +103,34 @@ const AdminDashboard = () => {
             }
 
             if (res.success) {
+                const now = new Date();
+                const studentId = editingStudent ? editingStudent.id : (res.student?.id || payload.id);
+
+                console.log('[Student] Created/Updated id:', studentId, 'is_free:', studentForm.is_free, 'fee:', payload.monthly_fee);
+
+                // Always write a Payment row for the current month (Paid or Unpaid)
+                // Skip free students (fee = 0)
+                if (!studentForm.is_free && parseFloat(payload.monthly_fee) > 0) {
+                    const isPaid = !editingStudent && studentForm.paid_this_month;
+                    console.log('[Payment] Triggering recordPayment for studentId:', studentId, 'isPaid:', isPaid);
+                    const payRes = await api.recordPayment(
+                        studentId,
+                        now.getMonth(),
+                        now.getFullYear(),
+                        payload.monthly_fee,
+                        isPaid
+                    );
+                    if (!payRes.success) {
+                        console.error('[Payment] recordPayment failed:', payRes.message);
+                        toast.warning('Student saved but payment record failed — check console');
+                    } else {
+                        console.log('[Payment] recordPayment succeeded');
+                    }
+                } else {
+                    console.log('[Payment] Skipped (free student or zero fee)');
+                }
+
+
                 toast.success(editingStudent ? 'Record updated successfully!' : 'Student registered successfully!');
                 setShowStudentModal(false);
                 resetForm();
@@ -94,6 +141,8 @@ const AdminDashboard = () => {
         } catch (error) {
             console.error('Submission failed:', error);
             toast.error('Submission failed');
+        } finally {
+            setSubmitting(false);
         }
     };
 
@@ -133,34 +182,42 @@ const AdminDashboard = () => {
         const originalPayments = [...payments];
 
         try {
-            // OPTIMISTIC UPDATES
-            // 1. Handle "Free" Status
+            // ── 1. Mark student as FREE ──────────────────────────────
             if (newStatus === 'free') {
+                // Optimistic UI update
                 setStudents(prev => prev.map(s =>
                     s.id === student.id ? { ...s, monthly_fee: 0, is_free: true } : s
                 ));
+                // Remove from payment tracking for this month
+                setPayments(prev => prev.filter(p =>
+                    !(String(p.student_id) === String(student.id) &&
+                        String(p.month) === String(selectedMonth) &&
+                        String(p.year) === String(selectedYear))
+                ));
 
-                await api.updateProfile(student.id, { is_free: true, monthly_fee: 0 });
-                // Success - student is now free
+                // Update Student sheet: mark free, zero fee
+                await api.updateProfile(student.id, { is_free: 'TRUE', monthly_fee: 0 });
+                // Update Payment sheet: mark as Free/zero for this month
+                await api.recordPayment(student.id, selectedMonth, selectedYear, 0, false);
                 return;
             }
 
-            // 2. Handle Switching FROM Free TO Paid/Unpaid
-            let currentFee = student.monthly_fee;
-            if (student.is_free || parseFloat(student.monthly_fee) === 0) {
+            // ── 2. Switch FROM Free → Paid/Unpaid ───────────────────
+            let currentFee = parseFloat(student.monthly_fee);
+            if (student.is_free || currentFee === 0) {
+                currentFee = 500; // default fee when switching back from free
                 setStudents(prev => prev.map(s =>
-                    s.id === student.id ? { ...s, monthly_fee: 500, is_free: false } : s
+                    s.id === student.id ? { ...s, monthly_fee: currentFee, is_free: false } : s
                 ));
-                currentFee = 500; // Default fee for recording
-
-                await api.updateProfile(student.id, { is_free: false });
+                // Update Student sheet: clear free flag, set default fee
+                await api.updateProfile(student.id, { is_free: 'FALSE', monthly_fee: currentFee });
             }
 
-            // 3. Handle Paid/Unpaid (Monthly Ledger)
-            const feeToRecord = parseFloat(currentFee) > 0 ? currentFee : 500;
+            // ── 3. Toggle Paid ↔ Unpaid ──────────────────────────────
+            const feeToRecord = currentFee > 0 ? currentFee : 500;
             const isPaid = newStatus === 'paid';
 
-            // Optimistically update payments
+            // Optimistic UI update
             setPayments(prev => {
                 const filtered = prev.filter(p =>
                     !(String(p.student_id) === String(student.id) &&
@@ -168,31 +225,22 @@ const AdminDashboard = () => {
                         String(p.year) === String(selectedYear))
                 );
                 return [...filtered, {
-                    id: 'temp-' + Date.now(),
-                    student_id: student.id,
+                    id: `${student.id}-${selectedMonth}-${selectedYear}`,
+                    student_id: String(student.id),
                     month: String(selectedMonth),
                     year: String(selectedYear),
                     amount: feeToRecord,
                     status: isPaid ? 'Paid' : 'Unpaid',
-                    payment_date: new Date().toISOString()
+                    payment_date: isPaid ? new Date().toISOString() : ''
                 }];
             });
 
-            // API call in background - no need to refresh as optimistic update is already correct
-            await api.recordPayment(
-                student.id,
-                selectedMonth,
-                selectedYear,
-                feeToRecord,
-                isPaid
-            );
-            // Success - optimistic update is now confirmed
-
+            // Update Payment sheet row (create if missing, update if exists)
+            await api.recordPayment(student.id, selectedMonth, selectedYear, feeToRecord, isPaid);
 
         } catch (error) {
             console.error(error);
             toast.error('Failed to update status');
-            // Revert on error
             setStudents(originalStudents);
             setPayments(originalPayments);
         }
@@ -251,7 +299,8 @@ const AdminDashboard = () => {
             monthly_fee: '',
             subscription_start: new Date().toISOString().split('T')[0],
             subscription_end: '',
-            is_free: false
+            is_free: false,
+            paid_this_month: false
         });
         setEditingStudent(null);
     };
@@ -511,102 +560,174 @@ const AdminDashboard = () => {
                         <div className="flex justify-center py-20">
                             <div className="w-12 h-12 border-4 border-gold-premium border-t-transparent rounded-full animate-spin"></div>
                         </div>
-                    ) : (
-                        <div className="bg-white rounded-[2rem] md:rounded-[3rem] border border-slate-100 overflow-hidden shadow-sm">
-
-                            <div className="overflow-x-auto custom-scrollbar">
-                                <table className="min-w-full text-xs md:text-sm">
-                                    <thead className="bg-slate-50/50 border-b border-slate-100">
-                                        <tr>
-                                            <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Desk</th>
-                                            <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Student</th>
-                                            <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Contact</th>
-                                            <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Fee</th>
-                                            <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Status ({months[selectedMonth]})</th>
-                                            <th className="px-6 py-5 text-right font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-50">
-                                        {filteredStudents.map((student, index) => {
-                                            const status = getPaymentStatusForSelectedMonth(student);
-                                            return (
-                                                <tr key={student.id} className="group hover:bg-slate-50 transition-colors">
-                                                    <td className="px-6 py-4 font-mono text-xs text-slate-400 group-hover:text-slate-600">
-                                                        {student.id ? student.id : `#${String(index + 1).padStart(3, '0')}`}
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="font-bold text-gray-900">{student.username}</div>
-                                                        <div className="text-[10px] text-gray-400 font-mono">{student.aadhar_number || 'No Aadhar'}</div>
-                                                    </td>
-                                                    <td className="px-6 py-4 text-gray-600 font-medium">{student.mobile || '—'}</td>
-                                                    <td className="px-6 py-4 font-bold text-gray-900">
-                                                        {parseFloat(student.monthly_fee) > 0 ? (
-                                                            <span>₹{parseFloat(student.monthly_fee).toLocaleString('en-IN')}</span>
-                                                        ) : (
-                                                            <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border border-blue-100">Free</span>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="relative">
-                                                            <select
-                                                                value={status.label.toLowerCase()}
-                                                                onChange={(e) => handleStatusChange(student, e.target.value)}
-                                                                className={`appearance-none cursor-pointer px-4 py-2 rounded-xl text-xs font-black ${status.bgColor} ${status.color} hover:opacity-80 transition-all border-none focus:ring-2 focus:ring-amber-500/20 text-center w-full`}
-                                                            >
-                                                                <option value="paid" className="text-green-600 bg-green-50 font-bold">PAID</option>
-                                                                <option value="unpaid" className="text-red-600 bg-red-50 font-bold">UNPAID</option>
-                                                                <option value="free" className="text-blue-600 bg-blue-50 font-bold">FREE</option>
-                                                            </select>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-6 py-4">
-                                                        <div className="flex gap-2">
-                                                            <button
-                                                                onClick={() => handleSendReceipt(student)}
-                                                                className="flex flex-col items-center gap-1 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-600 hover:text-white transition-all shadow-sm group"
-                                                                title="Send Receipt"
-                                                            >
-                                                                <span className="text-lg">📧</span>
-                                                                <span className="text-[9px] font-bold uppercase tracking-wide">Receipt</span>
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleSendReminder(student)}
-                                                                className="flex flex-col items-center gap-1 px-3 py-2 bg-amber-50 text-amber-600 rounded-lg hover:bg-amber-600 hover:text-white transition-all shadow-sm group"
-                                                                title="Send Reminder"
-                                                            >
-                                                                <span className="text-lg">📱</span>
-                                                                <span className="text-[9px] font-bold uppercase tracking-wide">Remind</span>
-                                                            </button>
-                                                            <button
-                                                                onClick={() => handleEditStudent(student)}
-                                                                className="flex flex-col items-center gap-1 px-3 py-2 bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-900 hover:text-white transition-all shadow-sm group"
-                                                                title="Edit Student"
-                                                            >
-                                                                <span className="text-lg">✏️</span>
-                                                                <span className="text-[9px] font-bold uppercase tracking-wide">Edit</span>
-                                                            </button>
-                                                            <button
-                                                                onClick={() => setStudentToDelete(student)}
-                                                                className="flex flex-col items-center gap-1 px-3 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-600 hover:text-white transition-all shadow-sm group"
-                                                                title="Delete"
-                                                            >
-                                                                <span className="text-lg">🗑️</span>
-                                                                <span className="text-[9px] font-bold uppercase tracking-wide">Delete</span>
-                                                            </button>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-                            </div>
-                            {filteredStudents.length === 0 && (
-                                <div className="text-center py-20 text-gray-400 font-medium italic">
-                                    No student records match the filters.
-                                </div>
-                            )}
+                    ) : filteredStudents.length === 0 ? (
+                        <div className="text-center py-20 text-gray-400 font-medium italic bg-white rounded-[2rem] border border-slate-100">
+                            No student records match the filters.
                         </div>
+                    ) : (
+                        <>
+                            {/* ── MOBILE CARD VIEW (hidden on md+) ── */}
+                            <div className="md:hidden space-y-3">
+                                {filteredStudents.map((student, index) => {
+                                    const status = getPaymentStatusForSelectedMonth(student);
+                                    return (
+                                        <div key={student.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 space-y-3">
+                                            {/* Row 1: Desk + Name + Status */}
+                                            <div className="flex items-center justify-between gap-2">
+                                                <div className="flex items-center gap-3 min-w-0">
+                                                    <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                                                        #{student.id || String(index + 1).padStart(3, '0')}
+                                                    </span>
+                                                    <div className="min-w-0">
+                                                        <div className="font-black text-slate-900 text-sm truncate">{student.username}</div>
+                                                        <div className="text-[10px] text-slate-400 font-mono truncate">{student.aadhar_number || 'No Aadhar'}</div>
+                                                    </div>
+                                                </div>
+                                                <select
+                                                    value={status.label.toLowerCase()}
+                                                    onChange={(e) => handleStatusChange(student, e.target.value)}
+                                                    className={`shrink-0 appearance-none cursor-pointer px-3 py-1.5 rounded-xl text-[10px] font-black ${status.bgColor} ${status.color} border-none focus:ring-2 focus:ring-amber-500/20`}
+                                                >
+                                                    <option value="paid" className="text-green-600 bg-green-50 font-bold">PAID</option>
+                                                    <option value="unpaid" className="text-red-600 bg-red-50 font-bold">UNPAID</option>
+                                                    <option value="free" className="text-blue-600 bg-blue-50 font-bold">FREE</option>
+                                                </select>
+                                            </div>
+
+                                            {/* Row 2: Mobile + Fee */}
+                                            <div className="flex items-center justify-between text-xs">
+                                                <span className="text-slate-500 font-medium">{student.mobile || '—'}</span>
+                                                <span className="font-black text-slate-900">
+                                                    {parseFloat(student.monthly_fee) > 0
+                                                        ? `₹${parseFloat(student.monthly_fee).toLocaleString('en-IN')}/mo`
+                                                        : <span className="bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full text-[10px] font-black border border-blue-100">FREE</span>
+                                                    }
+                                                </span>
+                                            </div>
+
+                                            {/* Row 3: Action Buttons */}
+                                            <div className="grid grid-cols-4 gap-2 pt-1 border-t border-slate-50">
+                                                <button
+                                                    onClick={() => handleSendReceipt(student)}
+                                                    className="flex flex-col items-center gap-1 py-2 bg-blue-50 text-blue-600 rounded-xl hover:bg-blue-600 hover:text-white transition-all text-[9px] font-bold uppercase tracking-wide"
+                                                >
+                                                    <span className="text-base">📧</span>Receipt
+                                                </button>
+                                                <button
+                                                    onClick={() => handleSendReminder(student)}
+                                                    className="flex flex-col items-center gap-1 py-2 bg-amber-50 text-amber-600 rounded-xl hover:bg-amber-600 hover:text-white transition-all text-[9px] font-bold uppercase tracking-wide"
+                                                >
+                                                    <span className="text-base">📱</span>Remind
+                                                </button>
+                                                <button
+                                                    onClick={() => handleEditStudent(student)}
+                                                    className="flex flex-col items-center gap-1 py-2 bg-slate-50 text-slate-600 rounded-xl hover:bg-slate-900 hover:text-white transition-all text-[9px] font-bold uppercase tracking-wide"
+                                                >
+                                                    <span className="text-base">✏️</span>Edit
+                                                </button>
+                                                <button
+                                                    onClick={() => setStudentToDelete(student)}
+                                                    className="flex flex-col items-center gap-1 py-2 bg-red-50 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all text-[9px] font-bold uppercase tracking-wide"
+                                                >
+                                                    <span className="text-base">🗑️</span>Delete
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* ── DESKTOP TABLE VIEW (hidden below md) ── */}
+                            <div className="hidden md:block bg-white rounded-[3rem] border border-slate-100 overflow-hidden shadow-sm">
+                                <div className="overflow-x-auto custom-scrollbar">
+                                    <table className="min-w-full text-sm">
+                                        <thead className="bg-slate-50/50 border-b border-slate-100">
+                                            <tr>
+                                                <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Desk</th>
+                                                <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Student</th>
+                                                <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Contact</th>
+                                                <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Fee</th>
+                                                <th className="px-6 py-5 text-left font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Status ({months[selectedMonth]})</th>
+                                                <th className="px-6 py-5 text-right font-black text-slate-500 uppercase tracking-widest whitespace-nowrap">Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-50">
+                                            {filteredStudents.map((student, index) => {
+                                                const status = getPaymentStatusForSelectedMonth(student);
+                                                return (
+                                                    <tr key={student.id} className="group hover:bg-slate-50 transition-colors">
+                                                        <td className="px-6 py-4 font-mono text-xs text-slate-400 group-hover:text-slate-600">
+                                                            {student.id ? student.id : `#${String(index + 1).padStart(3, '0')}`}
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            <div className="font-bold text-gray-900">{student.username}</div>
+                                                            <div className="text-[10px] text-gray-400 font-mono">{student.aadhar_number || 'No Aadhar'}</div>
+                                                        </td>
+                                                        <td className="px-6 py-4 text-gray-600 font-medium">{student.mobile || '—'}</td>
+                                                        <td className="px-6 py-4 font-bold text-gray-900">
+                                                            {parseFloat(student.monthly_fee) > 0 ? (
+                                                                <span>₹{parseFloat(student.monthly_fee).toLocaleString('en-IN')}</span>
+                                                            ) : (
+                                                                <span className="bg-blue-50 text-blue-600 px-3 py-1 rounded-full text-[10px] font-black tracking-widest uppercase border border-blue-100">Free</span>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            <div className="relative">
+                                                                <select
+                                                                    value={status.label.toLowerCase()}
+                                                                    onChange={(e) => handleStatusChange(student, e.target.value)}
+                                                                    className={`appearance-none cursor-pointer px-4 py-2 rounded-xl text-xs font-black ${status.bgColor} ${status.color} hover:opacity-80 transition-all border-none focus:ring-2 focus:ring-amber-500/20 text-center w-full`}
+                                                                >
+                                                                    <option value="paid" className="text-green-600 bg-green-50 font-bold">PAID</option>
+                                                                    <option value="unpaid" className="text-red-600 bg-red-50 font-bold">UNPAID</option>
+                                                                    <option value="free" className="text-blue-600 bg-blue-50 font-bold">FREE</option>
+                                                                </select>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-6 py-4">
+                                                            <div className="flex gap-2">
+                                                                <button
+                                                                    onClick={() => handleSendReceipt(student)}
+                                                                    className="flex flex-col items-center gap-1 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-600 hover:text-white transition-all shadow-sm group"
+                                                                    title="Send Receipt"
+                                                                >
+                                                                    <span className="text-lg">📧</span>
+                                                                    <span className="text-[9px] font-bold uppercase tracking-wide">Receipt</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleSendReminder(student)}
+                                                                    className="flex flex-col items-center gap-1 px-3 py-2 bg-amber-50 text-amber-600 rounded-lg hover:bg-amber-600 hover:text-white transition-all shadow-sm group"
+                                                                    title="Send Reminder"
+                                                                >
+                                                                    <span className="text-lg">📱</span>
+                                                                    <span className="text-[9px] font-bold uppercase tracking-wide">Remind</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleEditStudent(student)}
+                                                                    className="flex flex-col items-center gap-1 px-3 py-2 bg-slate-50 text-slate-600 rounded-lg hover:bg-slate-900 hover:text-white transition-all shadow-sm group"
+                                                                    title="Edit Student"
+                                                                >
+                                                                    <span className="text-lg">✏️</span>
+                                                                    <span className="text-[9px] font-bold uppercase tracking-wide">Edit</span>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => setStudentToDelete(student)}
+                                                                    className="flex flex-col items-center gap-1 px-3 py-2 bg-red-50 text-red-600 rounded-lg hover:bg-red-600 hover:text-white transition-all shadow-sm group"
+                                                                    title="Delete"
+                                                                >
+                                                                    <span className="text-lg">🗑️</span>
+                                                                    <span className="text-[9px] font-bold uppercase tracking-wide">Delete</span>
+                                                                </button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </>
                     )
                 }
             </div >
@@ -758,32 +879,36 @@ const AdminDashboard = () => {
                         </div>
                     </div>
 
-                    {/* Payment Status (Only show if not free) */}
+                    {/* (g) Payment Status — functional checkbox for first-month payment */}
                     {!studentForm.is_free && (
                         <div className="pb-6">
                             <h3 className="text-sm font-black text-gray-700 uppercase tracking-wider mb-4">Current Month Payment</h3>
-                            <label className="flex items-center gap-3 cursor-pointer">
+                            <label className="flex items-center gap-3 cursor-pointer group">
                                 <input
                                     type="checkbox"
-                                    checked={getPaymentStatusForSelectedMonth({
-                                        id: editingStudent?.id || 'temp',
-                                        monthly_fee: studentForm.monthly_fee
-                                    }).isPaid}
-                                    disabled={true}
-                                    // This checkbox is just visual in the simplified logic as payment is toggleable from list
-                                    // Or we can allow setting it for current month here?
-                                    // For simplicity, let's remove it or make it just a static label saying "Manage payments from dashboard"
-                                    className="w-5 h-5 rounded border-gray-300 text-green-600 focus:ring-green-500 opacity-50"
+                                    checked={studentForm.paid_this_month}
+                                    onChange={e => setStudentForm({ ...studentForm, paid_this_month: e.target.checked })}
+                                    disabled={!!editingStudent}
+                                    className="w-5 h-5 rounded border-gray-300 text-green-600 focus:ring-green-500 cursor-pointer"
                                 />
-                                <span className="text-sm font-medium text-gray-500 italic">
-                                    Payments are now managed from the dashboard list for specific months.
+                                <span className="text-sm font-semibold text-gray-700 group-hover:text-green-700 transition-colors">
+                                    Mark as <span className="text-green-600 font-black">PAID</span> for {months[new Date().getMonth()]} {new Date().getFullYear()}
+                                    <span className="block text-xs text-gray-400 font-normal mt-0.5">Check this if the student paid fees on the spot during registration.</span>
                                 </span>
                             </label>
                         </div>
                     )}
 
-                    <button type="submit" className="w-full bg-amber-500 hover:bg-amber-600 text-white font-black py-5 rounded-2xl shadow-xl shadow-amber-200 transition-all hover:-translate-y-1 active:scale-95 text-lg uppercase tracking-[0.2em]">
-                        {editingStudent ? 'Update Details' : 'Register Student'}
+                    {/* (f) Disabled while submitting to prevent double-create */}
+                    <button
+                        type="submit"
+                        disabled={submitting}
+                        className={`w-full text-white font-black py-5 rounded-2xl shadow-xl transition-all text-lg uppercase tracking-[0.2em] ${submitting
+                            ? 'bg-amber-300 cursor-not-allowed shadow-amber-100'
+                            : 'bg-amber-500 hover:bg-amber-600 shadow-amber-200 hover:-translate-y-1 active:scale-95'
+                            }`}
+                    >
+                        {submitting ? 'Saving...' : (editingStudent ? 'Update Details' : 'Register Student')}
                     </button>
                 </form>
             </Modal>

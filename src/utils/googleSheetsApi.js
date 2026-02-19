@@ -6,7 +6,7 @@
 // ------------------------------------------------------------------
 // 🔴 REPLACE THIS WITH YOUR GOOGLE APPS SCRIPT WEB APP URL
 // ------------------------------------------------------------------
-const GOOGLE_SCRIPT_URL = 'INSERT_YOUR_WEB_APP_URL_HERE';
+const GOOGLE_SCRIPT_URL = 'https://docs.google.com/spreadsheets/d/1bStNoXGAZjZYp1W30Y5DSFalIu6cMLgAYUrasf72eNI/edit#gid=0';
 // Example: 'https://script.google.com/macros/s/AKfycbx.../exec'
 // ------------------------------------------------------------------
 

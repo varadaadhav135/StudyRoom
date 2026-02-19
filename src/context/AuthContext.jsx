@@ -20,6 +20,9 @@ export const AuthProvider = ({ children }) => {
     const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL || 'admin@dynanpeth.com';
     const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || 'admin123';
 
+    // 90 days in ms — safety cap for forgotten sessions
+    const SESSION_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+
     useEffect(() => {
         // Check for existing session in localStorage
         const storedSession = localStorage.getItem('admin_session');
@@ -29,9 +32,18 @@ export const AuthProvider = ({ children }) => {
             try {
                 const parsedSession = JSON.parse(storedSession);
                 const parsedUser = JSON.parse(storedUser);
-                setSession(parsedSession);
-                setUser(parsedUser);
-                setProfile({ role: 'Admin', username: 'Administrator', email: parsedUser.email });
+
+                // Safety cap: clear sessions older than 90 days
+                const sessionAge = Date.now() - (parsedSession.created_at || 0);
+                if (sessionAge > SESSION_MAX_AGE_MS) {
+                    localStorage.removeItem('admin_session');
+                    localStorage.removeItem('admin_user');
+                } else {
+                    // (e) No expiry — session persists until manual logout
+                    setSession(parsedSession);
+                    setUser(parsedUser);
+                    setProfile({ role: 'Admin', username: 'Administrator', email: parsedUser.email });
+                }
             } catch (error) {
                 console.error('Error parsing stored session:', error);
                 localStorage.removeItem('admin_session');
@@ -54,10 +66,10 @@ export const AuthProvider = ({ children }) => {
                 const adminSession = {
                     user: adminUser,
                     access_token: 'admin-token',
-                    expires_at: Date.now() + (24 * 60 * 60 * 1000) // 24 hours
+                    created_at: Date.now() // (e) Track age for 90-day cap, no hard expiry
                 };
 
-                // Store in localStorage
+                // Store in localStorage — persists until manual logout
                 localStorage.setItem('admin_session', JSON.stringify(adminSession));
                 localStorage.setItem('admin_user', JSON.stringify(adminUser));
 
