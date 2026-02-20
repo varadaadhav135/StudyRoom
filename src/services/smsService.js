@@ -57,7 +57,7 @@ export const smsService = {
      */
     sendExpiryReminder: async (student) => {
         const endDate = new Date(student.subscription_end).toLocaleDateString('en-IN');
-        const message = `Hi ${student.username}, your DnyanPeeth library subscription expires on ${endDate}. Please renew to continue access. Contact admin for details.`;
+        const message = `Hi ${student.username}, your DnyanPeeth library subscription expires on ${endDate}. Please renew to continue access. Contact for details.`;
 
         return await smsService.sendSMS(student.mobile, message);
     },

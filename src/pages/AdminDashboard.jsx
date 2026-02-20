@@ -78,39 +78,23 @@ const AdminDashboard = () => {
             let res;
             if (editingStudent) {
                 res = await api.updateProfile(editingStudent.id, payload);
+                if (res.success && !studentForm.is_free) {
+                    // Update payment status for the currently selected dashboard month if changed via Modal
+                    await api.recordPayment(
+                        editingStudent.id,
+                        selectedMonth,
+                        selectedYear,
+                        payload.monthly_fee,
+                        studentForm.paid_this_month
+                    );
+                }
             } else {
                 res = await api.createStudent(null, payload);
+                // Note: api.createStudent already creates the row with the correct initial payment status 
+                // for the current month, so no redundant recordPayment call is needed here.
             }
 
             if (res.success) {
-                const now = new Date();
-                const studentId = editingStudent ? editingStudent.id : (res.student?.id || payload.id);
-
-                console.log('[Student] Created/Updated id:', studentId, 'is_free:', studentForm.is_free, 'fee:', payload.monthly_fee);
-
-                // Always write a Payment row for the current month (Paid or Unpaid)
-                // Skip free students (fee = 0)
-                if (!studentForm.is_free && parseFloat(payload.monthly_fee) > 0) {
-                    const isPaid = !editingStudent && studentForm.paid_this_month;
-                    console.log('[Payment] Triggering recordPayment for studentId:', studentId, 'isPaid:', isPaid);
-                    const payRes = await api.recordPayment(
-                        studentId,
-                        now.getMonth(),
-                        now.getFullYear(),
-                        payload.monthly_fee,
-                        isPaid
-                    );
-                    if (!payRes.success) {
-                        console.error('[Payment] recordPayment failed:', payRes.message);
-                        toast.warning('Student saved but payment record failed — check console');
-                    } else {
-                        console.log('[Payment] recordPayment succeeded');
-                    }
-                } else {
-                    console.log('[Payment] Skipped (free student or zero fee)');
-                }
-
-
                 toast.success(editingStudent ? 'Record updated successfully!' : 'Student registered successfully!');
                 setShowStudentModal(false);
                 resetForm();
@@ -128,6 +112,15 @@ const AdminDashboard = () => {
 
     const handleEditStudent = (student) => {
         setEditingStudent(student);
+
+        // Find existing payment status for the currently selected month in the dashboard
+        const paymentForMonth = payments.find(p =>
+            String(p.student_id) === String(student.id) &&
+            String(p.month) === String(selectedMonth) &&
+            String(p.year) === String(selectedYear)
+        );
+        const isPaidThisMonth = paymentForMonth?.status === 'Paid';
+
         setStudentForm({
             id: student.id,
             username: student.username,
@@ -137,7 +130,8 @@ const AdminDashboard = () => {
             monthly_fee: student.monthly_fee,
             subscription_start: student.subscriptions?.[0]?.start_date || new Date().toISOString().split('T')[0],
             subscription_end: student.subscriptions?.[0]?.end_date || '',
-            is_free: parseFloat(student.monthly_fee) === 0 // Infer free status from fee
+            is_free: parseFloat(student.monthly_fee) === 0,
+            paid_this_month: isPaidThisMonth
         });
         setShowStudentModal(true);
     };
@@ -865,21 +859,22 @@ const AdminDashboard = () => {
                         </div>
                     </div>
 
-                    {/* (g) Payment Status — functional checkbox for first-month payment */}
+                    {/* (g) Payment Status — functional checkbox for current month payment */}
                     {!studentForm.is_free && (
                         <div className="pb-6">
-                            <h3 className="text-sm font-black text-gray-700 uppercase tracking-wider mb-4">Current Month Payment</h3>
+                            <h3 className="text-sm font-black text-gray-700 uppercase tracking-wider mb-4">Payment Status ({months[selectedMonth]} {selectedYear})</h3>
                             <label className="flex items-center gap-3 cursor-pointer group">
                                 <input
                                     type="checkbox"
                                     checked={studentForm.paid_this_month}
                                     onChange={e => setStudentForm({ ...studentForm, paid_this_month: e.target.checked })}
-                                    disabled={!!editingStudent}
                                     className="w-5 h-5 rounded border-gray-300 text-green-600 focus:ring-green-500 cursor-pointer"
                                 />
                                 <span className="text-sm font-semibold text-gray-700 group-hover:text-green-700 transition-colors">
-                                    Mark as <span className="text-green-600 font-black">PAID</span> for {months[new Date().getMonth()]} {new Date().getFullYear()}
-                                    <span className="block text-xs text-gray-400 font-normal mt-0.5">Check this if the student paid fees on the spot during registration.</span>
+                                    Mark as <span className="text-green-600 font-black">PAID</span> for {months[selectedMonth]} {selectedYear}
+                                    <span className="block text-xs text-gray-400 font-normal mt-0.5">
+                                        {editingStudent ? 'Update payment status for the currently selected month.' : 'Check this if the student paid fees on the spot during registration.'}
+                                    </span>
                                 </span>
                             </label>
                         </div>
